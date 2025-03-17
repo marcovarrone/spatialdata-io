@@ -11,7 +11,7 @@ import anndata as ad
 import pandas as pd
 import readfcs
 from dask_image.imread import imread
-from spatialdata import SpatialData
+from spatialdata import SpatialData, read_zarr
 from spatialdata._logging import logger
 from spatialdata.models import Image2DModel, ShapesModel, TableModel
 
@@ -26,6 +26,7 @@ def codex(
     path: str | Path,
     fcs: bool = True,
     imread_kwargs: Mapping[str, Any] = MappingProxyType({}),
+    # output_path: Path | None = None, # ADDED_BY_F
 ) -> SpatialData:
     """
     Read *CODEX* formatted dataset.
@@ -47,12 +48,15 @@ def codex(
         Whether a .fcs file is provided. If False, a .csv file is expected.
     imread_kwargs
         Keyword arguments passed to :func:`dask_image.imread.imread`.
+    output_path
+        Path to directly write every element to a zarr file as soon as it is read. This can decrease the memory requirement.
 
     Returns
     -------
     :class:`spatialdata.SpatialData`
     """
     path = Path(path)
+    # output_path = Path(output_path) if output_path is not None else None # ADDED_BY_F
     patt = re.compile(".*.fcs") if fcs else re.compile(".*.csv")
     path_files = [i for i in os.listdir(path) if patt.match(i)]
     if path_files and CodexKeys.FCS_FILE or CodexKeys.FCS_FILE_CSV in patt.pattern:
@@ -66,11 +70,16 @@ def codex(
 
     adata = _codex_df_to_anndata(fcs)
 
+    # sdata = SpatialData()
+    # if output_path is not None:
+    #     sdata.write(output_path)
+
     xy = adata.obsm[CodexKeys.SPATIAL_KEY]
     shapes = ShapesModel.parse(xy, geometry=0, radius=1, index=adata.obs[CodexKeys.INSTANCE_KEY])
     region = adata.obs[CodexKeys.REGION_KEY].unique()[0]
     adata.obs[CodexKeys.REGION_KEY] = adata.obs[CodexKeys.REGION_KEY].astype("category")
     table = TableModel.parse(adata, region=region, region_key=CodexKeys.REGION_KEY, instance_key=CodexKeys.INSTANCE_KEY)
+    
 
     im_patt = re.compile(".*.tif")
     path_files = [i for i in os.listdir(path) if im_patt.match(i)]
