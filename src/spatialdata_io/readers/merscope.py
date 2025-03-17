@@ -16,7 +16,7 @@ import xarray
 from dask import array as da
 from dask_image.imread import imread
 from shapely.geometry import MultiPolygon
-from spatialdata import SpatialData
+from spatialdata import SpatialData, read_zarr
 from spatialdata._logging import logger
 from spatialdata.models import Image2DModel, PointsModel, ShapesModel, TableModel
 from spatialdata.transformations import Affine, BaseTransformation
@@ -24,8 +24,12 @@ from spatialdata.transformations import Affine, BaseTransformation
 from spatialdata_io._constants._constants import MerscopeKeys
 from spatialdata_io._docs import inject_docs
 
+from memory_profiler import profile
+import gc
+
 SUPPORTED_BACKENDS = ["dask_image", "rioxarray"]
 
+fp=open('memory_profiler_low_memory_big.log','w+')
 
 def _get_channel_names(images_dir: Path) -> list[str]:
     exp = r"mosaic_(?P<stain>[\w|-]+[0-9]?)_z(?P<z>[0-9]+).tif"
@@ -79,7 +83,7 @@ def _get_file_paths(path: Path, vpt_outputs: Path | str | dict[str, Any] | None)
         f"`vpt_outputs` has to be either `None`, `str`, `Path`, or `dict`. Found type {type(vpt_outputs)}."
     )
 
-
+@profile(stream=fp)
 @inject_docs(ms=MerscopeKeys)
 def merscope(
     path: str | Path,
@@ -94,6 +98,7 @@ def merscope(
     mosaic_images: bool = True,
     imread_kwargs: Mapping[str, Any] = MappingProxyType({}),
     image_models_kwargs: Mapping[str, Any] = MappingProxyType({}),
+    output_path: Path | None = None,
 ) -> SpatialData:
     """
     Read *MERSCOPE* data from Vizgen.
@@ -144,6 +149,8 @@ def merscope(
         Keyword arguments to pass to the image reader.
     image_models_kwargs
         Keyword arguments to pass to the image models.
+    output_path
+        Path to directly write every element to a zarr file as soon as it is read. This can decrease the memory requirement.
 
     Returns
     -------
@@ -165,6 +172,8 @@ def merscope(
     ), f"Backend '{backend} not supported. Should be one of: {', '.join(SUPPORTED_BACKENDS)}"
 
     path = Path(path).absolute()
+    output_path = Path(output_path) if output_path is not None else None
+    
     count_path, obs_path, boundaries_path = _get_file_paths(path, vpt_outputs)
     images_dir = path / MerscopeKeys.IMAGES_DIR
 
@@ -178,8 +187,12 @@ def merscope(
     dataset_id = f"{slide_name}_{vizgen_region}"
     region = f"{dataset_id}_polygons"
 
+    sdata = SpatialData()
+
+    if output_path is not None:
+        sdata.write(output_path)
+
     # Images
-    images = {}
 
     if mosaic_images:
         z_layers = [z_layers] if isinstance(z_layers, int) else z_layers or []
@@ -189,45 +202,61 @@ def merscope(
         stainings = _get_channel_names(images_dir)
         if stainings:
             for z_layer in z_layers:
-                images[f"{dataset_id}_z{z_layer}"] = reader(
+                sdata.images[f"{dataset_id}_z{z_layer}"] = reader(
                     images_dir,
                     stainings,
                     z_layer,
                     image_models_kwargs,
                     **imread_kwargs,
                 )
+            if output_path is not None:
+                sdata.write_element(element_name=f"{dataset_id}_z{z_layer}")
+                del sdata.images[f"{dataset_id}_z{z_layer}"]
+            gc.collect()
 
     # Transcripts
-    points = {}
 
     if transcripts:
         transcript_path = path / MerscopeKeys.TRANSCRIPTS_FILE
         if transcript_path.exists():
-            points[f"{dataset_id}_transcripts"] = _get_points(transcript_path, transformations)
+            sdata.points[f"{dataset_id}_transcripts"] = _get_points(transcript_path, transformations)
         else:
             logger.warning(f"Transcript file {transcript_path} does not exist. Transcripts are not loaded.")
-
+            
+            if output_path is not None:
+                sdata.write_element(element_name=f"{dataset_id}_transcripts")
+                del sdata.points[f"{dataset_id}_transcripts"]
+            gc.collect()
     # Polygons
-    shapes = {}
 
     if cells_boundaries:
         if boundaries_path.exists():
-            shapes[f"{dataset_id}_polygons"] = _get_polygons(boundaries_path, transformations)
+            sdata.shapes[f"{dataset_id}_polygons"] = _get_polygons(boundaries_path, transformations)
         else:
             logger.warning(f"Boundary file {boundaries_path} does not exist. Cell boundaries are not loaded.")
 
+            if output_path is not None:
+                sdata.write_element(element_name=f"{dataset_id}_polygons")
+                del sdata.shapes[f"{dataset_id}_polygons"]
+            gc.collect()
     # Tables
-    tables = {}
 
     if cells_table:
         if count_path.exists() and obs_path.exists():
-            tables["table"] = _get_table(count_path, obs_path, vizgen_region, slide_name, dataset_id, region)
+            sdata.tables["table"] = _get_table(count_path, obs_path, vizgen_region, slide_name, dataset_id, region)
         else:
             logger.warning(
                 f"At least one of the following files does not exist: {count_path}, {obs_path}. The table is not loaded."
             )
-
-    return SpatialData(shapes=shapes, points=points, images=images, tables=tables)
+            if output_path is not None:
+                sdata.write_element(element_name="table")
+                del sdata.labels["table"]
+            gc.collect()
+    
+    if output_path is not None:
+        sdata = read_zarr(output_path)
+    
+    return sdata
 
 
 def _get_reader(backend: str | None) -> Callable:  # type: ignore[type-arg]
