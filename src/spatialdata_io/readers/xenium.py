@@ -44,12 +44,17 @@ from spatialdata_io._docs import inject_docs
 from spatialdata_io._utils import deprecation_alias
 from spatialdata_io.readers._utils._read_10x_h5 import _read_10x_h5
 from spatialdata_io.readers._utils._utils import _initialize_raster_models_kwargs
+from memory_profiler import profile
+import gc
 
 __all__ = ["xenium", "xenium_aligned_image", "xenium_explorer_selection"]
 
 
+fp=open('memory_profiler_low_memory_big.log','w+')
+
 @deprecation_alias(cells_as_shapes="cells_as_circles", cell_boundaries="cells_boundaries", cell_labels="cells_labels")
 @inject_docs(xx=XeniumKeys)
+@profile(stream=fp)
 def xenium(
     path: str | Path,
     *,
@@ -232,6 +237,7 @@ def xenium(
         if output_path is not None:
             sdata.write_element(element_name="nucleus_labels")
             del sdata.labels["nucleus_labels"]
+        gc.collect()
     if cells_labels:
         sdata.labels["cell_labels"], cell_labels_indices_mapping = _get_labels_and_indices_mapping(
             path,
@@ -244,6 +250,7 @@ def xenium(
         if output_path is not None:
             sdata.write_element(element_name="cell_labels")
             del sdata.labels["cell_labels"]
+        gc.collect()
         if cell_labels_indices_mapping is not None and table is not None:
             if not pd.DataFrame.equals(cell_labels_indices_mapping["cell_id"], table.obs[str(XeniumKeys.CELL_ID)]):
                 warnings.warn(
@@ -269,6 +276,7 @@ def xenium(
         if output_path is not None:
             sdata.write_element(element_name="nucleus_boundaries")
             del sdata.shapes["nucleus_boundaries"]
+        gc.collect()
     if cells_boundaries:
         sdata.shapes["cell_boundaries"] = _get_polygons(
             path,
@@ -280,11 +288,13 @@ def xenium(
         if output_path is not None:
             sdata.write_element(element_name="cell_boundaries")
             del sdata.shapes["cell_boundaries"]
+        gc.collect()
     if transcripts:
         sdata.points["transcripts"] = _get_points(path, specs)
         if output_path is not None:
             sdata.write_element(element_name="transcripts")
             del sdata.points["transcripts"]
+        gc.collect()
     if version is None or version < packaging.version.parse("2.0.0"):
         if morphology_mip:
             sdata.images["morphology_mip"] = _get_images(
@@ -296,6 +306,7 @@ def xenium(
             if output_path is not None:
                 sdata.write_element(element_name="morphology_mip")
                 del sdata.images["morphology_mip"]
+            gc.collect()
         if morphology_focus:
             sdata.images["morphology_focus"] = _get_images(
                 path,
@@ -306,6 +317,7 @@ def xenium(
             if output_path is not None:
                 sdata.write_element(element_name="morphology_focus")
                 del sdata.images["morphology_focus"]
+            gc.collect()
     else:
         if morphology_focus:
             morphology_focus_dir = path / XeniumKeys.MORPHOLOGY_FOCUS_DIR
@@ -368,12 +380,13 @@ def xenium(
         if output_path is not None:
             sdata.write_element(element_name="table")
             del sdata.tables["table"]
+        gc.collect()
 
     if cells_as_circles:
         sdata.shapes[specs["region"]] = circles
         sdata.write_element(element_name=specs["region"])
         del sdata.shapes[specs["region"]]
-
+        gc.collect()
     # find and add additional aligned images
     if aligned_images:
         extra_images = _add_aligned_images(path, imread_kwargs, image_models_kwargs)
@@ -382,6 +395,7 @@ def xenium(
             if output_path is not None:
                 sdata.write_element(element_name=key)
                 del sdata.images[key]
+            gc.collect()
 
     if output_path is not None:
         sdata = read_zarr(output_path)
